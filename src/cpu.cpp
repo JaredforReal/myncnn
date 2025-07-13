@@ -2261,39 +2261,126 @@ namespace ncnn {
 CpuSet::CpuSet()
 {
     disable_all();
+
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    actual_cpu_count = (int)sysinfo.dwNumberOfProcessors;
+
+    legacy_mode = (actual_cpu_count < 64);
 }
 
 void CpuSet::enable(int cpu)
 {
-    mask |= ((ULONG_PTR)1 << cpu);
+    if (cpu < 0 || cpu >= actual_cpu_count)
+    {
+        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, %d)", cpu, actual_cpu_count);
+        return;
+    }
+
+    if (legacy_mode && cpu >= 64)
+    {
+        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, 64)", cpu);
+        return;
+    }
+
+    int group = cpu / (sizeof(ULONG_PTR) * 8);
+    int bit = cpu % (sizeof(ULONG_PTR) * 8);
+
+    if (group <= NCNN_CPU_MASK_GROUPS)
+    {
+        mask_groups[group] |= ((ULONG_PTR)1 << bit);
+    }
 }
 
 void CpuSet::disable(int cpu)
 {
-    mask &= ~((ULONG_PTR)1 << cpu);
+    if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
+        return;
+    
+    int group = cpu / (sizeof(ULONG_PTR) * 8);
+    int bit = cpu % (sizeof(ULONG_PTR) * 8);
+    
+    if (group < NCNN_CPU_MASK_GROUPS)
+    {
+        mask_groups[group] &= ~((ULONG_PTR)1 << bit);
+    }
 }
 
 void CpuSet::disable_all()
 {
-    mask = 0;
+    for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
+    {
+        mask_groups[i] = 0;
+    }
 }
 
 bool CpuSet::is_enabled(int cpu) const
 {
-    return mask & ((ULONG_PTR)1 << cpu);
+    if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
+        return false;
+    
+    if (legacy_mode && cpu >= 64)
+        return false;
+    
+    int group = cpu / (sizeof(ULONG_PTR) * 8);
+    int bit = cpu % (sizeof(ULONG_PTR) * 8);
+    
+    if (group < NCNN_CPU_MASK_GROUPS)
+    {
+        return (mask_groups[group] & ((ULONG_PTR)1 << bit)) != 0;
+    }
+    
+    return false;
 }
 
 int CpuSet::num_enabled() const
 {
-    int num_enabled = 0;
-    for (int i = 0; i < (int)sizeof(mask) * 8; i++)
+    int count = 0;
+    for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
     {
-        if (is_enabled(i))
-            num_enabled++;
+        ULONG_PTR mask = mask_groups[i];
+
+        while (mask)
+        {
+            count += mask & 1;
+            mask >>= 1;
+        }
+    }
+    return count;
+}
+
+void CpuSet::set_group_mask(int group, ULONG_PTR mask)
+{
+    if (group < 0 || group >= NCNN_CPU_MASK_GROUPS)
+    {
+        NCNN_LOGE("CpuSet::set_group_mask group %d out of range [0, %d)", group, NCNN_CPU_MASK_GROUPS);
+        return;
     }
 
-    return num_enabled;
+    mask_groups[group] = mask;
 }
+
+ULONG_PTR CpuSet::get_group_mask(int group) const
+{
+    if (group < 0 || group >= NCNN_CPU_MASK_GROUPS)
+    {
+        NCNN_LOGE("CpuSet::get_group_mask group %d out of range [0, %d)", group, NCNN_CPU_MASK_GROUPS);
+        return 0;
+    }
+
+    return mask_groups[group];
+}
+
+int CpuSet::get_group_count() const
+{
+    return NCNN_CPU_MASK_GROUPS;
+}
+
+bool CpuSet::is_legacy_mode() const
+{
+    return legacy_mode;
+}
+
 #elif defined __ANDROID__ || defined __linux__
 CpuSet::CpuSet()
 {
