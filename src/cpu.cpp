@@ -2515,7 +2515,7 @@ void CpuSet::enable(int cpu)
     int group = cpu / (sizeof(ULONG_PTR) * 8);
     int bit = cpu % (sizeof(ULONG_PTR) * 8);
 
-    if (group <= NCNN_CPU_MASK_GROUPS)
+    if (group < NCNN_CPU_MASK_GROUPS)
     {
         mask_groups[group] |= ((ULONG_PTR)1 << bit);
     }
