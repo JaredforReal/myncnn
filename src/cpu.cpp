@@ -1364,12 +1364,29 @@ static ncnn::CpuSet get_smt_cpu_mask()
     {
         if (ptr->Relationship == RelationProcessorCore)
         {
-            ncnn::CpuSet smt_set;
-            smt_set.mask = ptr->ProcessorMask;
-            if (smt_set.num_enabled() > 1)
+            ULONG_PTR mask = ptr->ProcessorMask;
+            int cpu_count_in_core = 0;
+
+            ULONG_PTR temp_mask = mask;
+            while (temp_mask)
             {
-                // this core is smt
-                smt_cpu_mask.mask |= smt_set.mask;
+                if (temp_mask & 1)
+                {
+                    cpu_count_in_core++;
+                }
+                temp_mask >>= 1;
+            }
+
+            if (cpu_count_in_core > 1)
+            {
+                // this is a SMT cpu
+                for (int i = 0; i < 64 && mask; i++)
+                {
+                    if (mask & ((ULONG_PTR)1 << i))
+                    {
+                        smt_cpu_mask.enable(i);
+                    }
+                }
             }
         }
 
@@ -1599,6 +1616,100 @@ static int set_sched_affinity(const ncnn::CpuSet& thread_affinity_mask)
 }
 #endif // __APPLE__
 
+#if defined _WIN32
+static int set_sched_affinity(const ncnn::CpuSet& thread_affinity_mask)
+{
+    if (thread_affinity_mask.is_legacy_mode())
+    {
+        DWORD_PTR prev_mask = SetThreadAffinityMask(GetCurrentThread(), thread_affinity_mask.get_group_mask(0));
+        if (prev_mask == 0)
+        {
+            NCNN_LOGE("SetThreadAffinityMask failed %d", GetLastError());
+            return -1;
+        }
+    }
+    else
+    {
+        HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+        if (!kernel32)
+        {
+            NCNN_LOGE("Failed to get kernel32.dll handle");
+            return -1;
+        }
+        
+        typedef BOOL(WINAPI *SetThreadGroupAffinityFunc)(HANDLE, const GROUP_AFFINITY*, PGROUP_AFFINITY);
+        SetThreadGroupAffinityFunc SetThreadGroupAffinityPtr = 
+            (SetThreadGroupAffinityFunc)GetProcAddress(kernel32, "SetThreadGroupAffinity");
+        
+        if (!SetThreadGroupAffinityPtr)
+        {
+            NCNN_LOGE("SetThreadGroupAffinity not available, falling back to legacy mode");
+            DWORD_PTR prev_mask = SetThreadAffinityMask(GetCurrentThread(), thread_affinity_mask.get_group_mask(0));
+            if (prev_mask == 0)
+            {
+                NCNN_LOGE("SetThreadAffinityMask failed %d", GetLastError());
+                return -1;
+            }
+            return 0;
+        }
+        
+        for (int group = 0; group < thread_affinity_mask.get_group_count(); group++)
+        {
+            ULONG_PTR group_mask = thread_affinity_mask.get_group_mask(group);
+            if (group_mask == 0)
+                continue;
+            
+            GROUP_AFFINITY group_affinity = {0};
+            group_affinity.Mask = group_mask;
+            group_affinity.Group = (WORD)group;
+            
+            if (!SetThreadGroupAffinityPtr(GetCurrentThread(), &group_affinity, NULL))
+            {
+                NCNN_LOGE("SetThreadGroupAffinity failed for group %d, error %d", group, GetLastError());
+                return -1;
+            }
+            
+            break;
+        }
+    }
+    
+    return 0;
+}
+
+static int get_processor_group_info()
+{
+    HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+    if (!kernel32)
+        return 1; 
+    
+    typedef WORD(WINAPI *GetActiveProcessorGroupCountFunc)(VOID);
+    GetActiveProcessorGroupCountFunc GetActiveProcessorGroupCountPtr = 
+        (GetActiveProcessorGroupCountFunc)GetProcAddress(kernel32, "GetActiveProcessorGroupCount");
+    
+    if (!GetActiveProcessorGroupCountPtr)
+        return 1; 
+    
+    return (int)GetActiveProcessorGroupCountPtr();
+}
+
+static int get_processors_in_group(int group)
+{
+    HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+    if (!kernel32)
+        return 1; 
+    
+    typedef DWORD(WINAPI *GetActiveProcessorCountFunc)(WORD);
+    GetActiveProcessorCountFunc GetActiveProcessorCountPtr = 
+        (GetActiveProcessorCountFunc)GetProcAddress(kernel32, "GetActiveProcessorCount");
+    
+    if (!GetActiveProcessorCountPtr)
+        return 1; 
+    
+    return (int)GetActiveProcessorCountPtr((WORD)group);
+}
+
+#endif // defined _WIN32
+
 static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::CpuSet& mask_little, ncnn::CpuSet& mask_big)
 {
     mask_all.disable_all();
@@ -1608,6 +1719,16 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
     }
 
 #if defined _WIN32
+    int group_count = get_processor_group_info();
+    // When number of CPU > 64, it will be divided into multiple processor groups.
+    // Assume that each group performs the same function
+    if (group_count > 1)
+    {
+        NCNN_LOGE("Multiple processor groups detected: %d, total_CPUs: %d", group_count, g_cpucount);
+        mask_little.disable_all();
+        mask_big = mask_all;
+        return;
+    }
 // Check SDK >= Win7
 #if _WIN32_WINNT >= _WIN32_WINNT_WIN7 // win7
 
@@ -1616,6 +1737,8 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
     if (!kernel32)
     {
         NCNN_LOGE("LoadLibrary kernel32.dll failed");
+        mask_little.disable_all();
+        mask_big = mask_all;
         return;
     }
 
@@ -1630,6 +1753,9 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         if (!glpie(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)(buffer.data()), &bufferSize))
         {
             NCNN_LOGE("GetLogicalProcessorInformationEx failed");
+            FreeLibrary(kernel32);
+            mask_little.disable_all();
+            mask_big = mask_all;
             return;
         }
 
@@ -1671,6 +1797,8 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
             ptr += info->Size;
         }
 
+        FreeLibrary(kernel32);
+
         if (maxEfficiencyClass == 0)
         {
             // All cores are P cores
@@ -1679,10 +1807,13 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         }
         else
         {
+            mask_little.disable_all();
+            mask_big.disable_all();
+
             for (int i = 0; i < g_cpucount; i++)
             {
                 bool isECore = false;
-                for (int j = 0; j < processorCoreType.size(); j++)
+                for (size_t j = 0; j < processorCoreType.size(); j++)
                 {
                     std::pair<DWORD, bool> p = processorCoreType[j];
                     if (p.first == i)
@@ -1691,7 +1822,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
                         break;
                     }
                 }
-                // fprintf(stderr, "processor %d is %s\n", i, isECore ? "E" : "P");
 
                 if (isECore)
                 {
@@ -1732,6 +1862,9 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         }
 
         ncnn::CpuSet smt_cpu_mask = get_smt_cpu_mask();
+
+        mask_little.disable_all();
+        mask_big.disable_all();
 
         for (int i = 0; i < g_cpucount; i++)
         {
@@ -2266,20 +2399,22 @@ CpuSet::CpuSet()
     GetSystemInfo(&sysinfo);
     actual_cpu_count = (int)sysinfo.dwNumberOfProcessors;
 
-    legacy_mode = (actual_cpu_count < 64);
+    int group_count = get_processor_group_info();
+    legacy_mode = (actual_cpu_count < 64 && group_count == 1);
 }
 
 void CpuSet::enable(int cpu)
 {
-    if (cpu < 0 || cpu >= actual_cpu_count)
+    if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
     {
-        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, %d)", cpu, actual_cpu_count);
+        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, %d)", cpu, NCNN_MAX_CPU_COUNT);
         return;
     }
 
+
     if (legacy_mode && cpu >= 64)
     {
-        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, 64)", cpu);
+        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, 64) in legacy mode", cpu);
         return;
     }
 
