@@ -9,10 +9,23 @@
 #if defined _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#endif
+#ifndef NCNN_MAX_CPU_COUNT
+    #ifdef NCNN_WINDOWS_SERVER
+        #define NCNN_MAX_CPU_COUNT 4096 // Windows Server
+    #elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN10)
+        #define NCNN_MAX_CPU_COUNT 512  // Windows 10/11 Pro
+    #elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN7)
+        #define NCNN_MAX_CPU_COUNT 256  // Windows 7+ Pro/Enterprise
+    #else
+        #define NCNN_MAX_CPU_COUNT 64   // Windows XP/2003
+    #endif
+#endif // NCNN_MAX_CPU_COUNT
+#define NCNN_CPU_MASK_GROUPS ((NCNN_MAX_CPU_COUNT + sizeof(ULONG_PTR) * 8 - 1) / (sizeof(ULONG_PTR) * 8))
+#endif // _WIN32
+
 #if defined __ANDROID__ || defined __linux__
 #include <sched.h> // cpu_set_t
-#endif
+#endif //__ANDROID__ || __linux__
 
 #include "platform.h"
 
@@ -28,9 +41,17 @@ public:
     bool is_enabled(int cpu) const;
     int num_enabled() const;
 
+#if defined _WIN32
+    void set_group_mask(int group, ULONG_PTR mask);
+    ULONG_PTR get_group_mask(int group) const;
+    int get_group_count() const;
+    bool is_legacy_mode() const;
+
 public:
 #if defined _WIN32
-    ULONG_PTR mask;
+    ULONG_PTR mask_groups[NCNN_CPU_MASK_GROUPS];
+    int actual_cpu_count;
+    bool legacy_mode;
 #endif
 #if defined __ANDROID__ || defined __linux__
     cpu_set_t cpu_set;
