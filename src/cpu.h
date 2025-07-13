@@ -7,9 +7,12 @@
 #include <stddef.h>
 
 #if defined _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
 #ifndef NCNN_MAX_CPU_COUNT
+
     #ifdef NCNN_WINDOWS_SERVER
         #define NCNN_MAX_CPU_COUNT 4096 // Windows Server
     #elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN10)
@@ -18,9 +21,12 @@
         #define NCNN_MAX_CPU_COUNT 256  // Windows 7+ Pro/Enterprise
     #else
         #define NCNN_MAX_CPU_COUNT 64   // Windows XP/2003
-    #endif
+    #endif // _WIN32_WINNT
+
 #endif // NCNN_MAX_CPU_COUNT
+
 #define NCNN_CPU_MASK_GROUPS ((NCNN_MAX_CPU_COUNT + sizeof(ULONG_PTR) * 8 - 1) / (sizeof(ULONG_PTR) * 8))
+
 #endif // _WIN32
 
 #if defined __ANDROID__ || defined __linux__
