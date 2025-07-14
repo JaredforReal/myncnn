@@ -2419,7 +2419,13 @@ CpuSet::CpuSet()
     actual_cpu_count = (int)sysinfo.dwNumberOfProcessors;
 
     int group_count = get_processor_group_info();
+
+    #if defined (NCNN_TEST_FORCE_MULTI_GROUP)
+    legacy_mode = false;
+    // NCNN_LOGE("CpuSet::CpuSet force multi group mode");
+    #else
     legacy_mode = (actual_cpu_count < 64 && group_count == 1);
+    #endif
 }
 
 void CpuSet::enable(int cpu)
