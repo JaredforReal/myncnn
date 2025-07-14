@@ -1690,22 +1690,6 @@ static int get_processor_group_info()
     return (int)GetActiveProcessorGroupCountPtr();
 }
 
-static int get_processors_in_group(int group)
-{
-    HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
-    if (!kernel32)
-        return 1; 
-    
-    typedef DWORD(WINAPI *GetActiveProcessorCountFunc)(WORD);
-    GetActiveProcessorCountFunc GetActiveProcessorCountPtr = 
-        (GetActiveProcessorCountFunc)GetProcAddress(kernel32, "GetActiveProcessorCount");
-    
-    if (!GetActiveProcessorCountPtr)
-        return 1; 
-    
-    return (int)GetActiveProcessorCountPtr((WORD)group);
-}
-
 #endif // defined _WIN32
 
 static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::CpuSet& mask_little, ncnn::CpuSet& mask_big)
