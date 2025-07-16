@@ -1378,29 +1378,7 @@ static ncnn::CpuSet get_smt_cpu_mask()
             }
 
             if (cpu_count_in_core > 1)
-            ULONG_PTR mask = ptr->ProcessorMask;
-            int cpu_count_in_core = 0;
-
-            ULONG_PTR temp_mask = mask;
-            while (temp_mask)
             {
-                if (temp_mask & 1)
-                {
-                    cpu_count_in_core++;
-                }
-                temp_mask >>= 1;
-            }
-
-            if (cpu_count_in_core > 1)
-            {
-                // this is a SMT cpu
-                for (int i = 0; i < 64 && mask; i++)
-                {
-                    if (mask & ((ULONG_PTR)1 << i))
-                    {
-                        smt_cpu_mask.enable(i);
-                    }
-                }
                 // this is a SMT cpu
                 for (int i = 0; i < 64 && mask; i++)
                 {
@@ -1740,16 +1718,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
     }
 
 #if defined _WIN32
-    int group_count = get_processor_group_info();
-    // When number of CPU > 64, it will be divided into multiple processor groups.
-    // Assume that each group performs the same function
-    if (group_count > 1)
-    {
-        NCNN_LOGE("Multiple processor groups detected: %d, total_CPUs: %d", group_count, g_cpucount);
-        mask_little.disable_all();
-        mask_big = mask_all;
-        return;
-    }
     int group_count = get_processor_group_info();
     // When number of CPU > 64, it will be divided into multiple processor groups.
     // Assume that each group performs the same function
@@ -2471,9 +2439,6 @@ bool CpuSet::is_enabled(int cpu) const
     if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
         return false;
     
-    if (legacy_mode && cpu >= 64)
-        return false;
-    
     int group = cpu / (sizeof(ULONG_PTR) * 8);
     int bit = cpu % (sizeof(ULONG_PTR) * 8);
     
@@ -2487,37 +2452,6 @@ bool CpuSet::is_enabled(int cpu) const
 
 int CpuSet::num_enabled() const
 {
-    int count = 0;
-    for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
-    {
-        ULONG_PTR mask = mask_groups[i];
-
-        while (mask)
-        {
-            count += mask & 1;
-            mask >>= 1;
-        }
-    }
-    return count;
-}
-
-void CpuSet::set_group_mask(int group, ULONG_PTR mask)
-{
-    if (group < 0 || group >= NCNN_CPU_MASK_GROUPS)
-    {
-        NCNN_LOGE("CpuSet::set_group_mask group %d out of range [0, %d)", group, NCNN_CPU_MASK_GROUPS);
-        return;
-    }
-
-    mask_groups[group] = mask;
-}
-
-ULONG_PTR CpuSet::get_group_mask(int group) const
-{
-    if (group < 0 || group >= NCNN_CPU_MASK_GROUPS)
-    {
-        NCNN_LOGE("CpuSet::get_group_mask group %d out of range [0, %d)", group, NCNN_CPU_MASK_GROUPS);
-        return 0;
     int count = 0;
     for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
     {
