@@ -7,20 +7,24 @@
 #include <stddef.h>
 
 #if defined _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
 #ifndef NCNN_MAX_CPU_COUNT
-    #ifdef NCNN_WINDOWS_SERVER
-        #define NCNN_MAX_CPU_COUNT 4096 // Windows Server
-    #elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN10)
-        #define NCNN_MAX_CPU_COUNT 512  // Windows 10/11 Pro
-    #elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN7)
-        #define NCNN_MAX_CPU_COUNT 256  // Windows 7+ Pro/Enterprise
-    #else
-        #define NCNN_MAX_CPU_COUNT 64   // Windows XP/2003
-    #endif
-#endif // NCNN_MAX_CPU_COUNT
+#if defined(NCNN_WINDOWS_SERVER)
+#define NCNN_MAX_CPU_COUNT 4096
+#elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN10)
+#define NCNN_MAX_CPU_COUNT 512
+#elif defined(_WIN32_WINNT) && (_WIN32_WINNT >= _WIN32_WINNT_WIN7)
+#define NCNN_MAX_CPU_COUNT 256
+#else
+#define NCNN_MAX_CPU_COUNT 64
+#endif
+#endif
+
 #define NCNN_CPU_MASK_GROUPS ((NCNN_MAX_CPU_COUNT + sizeof(ULONG_PTR) * 8 - 1) / (sizeof(ULONG_PTR) * 8))
+
 #endif // _WIN32
 
 #if defined __ANDROID__ || defined __linux__
@@ -46,6 +50,7 @@ public:
     ULONG_PTR get_group_mask(int group) const;
     int get_group_count() const;
     bool is_legacy_mode() const;
+#endif // defined _WIN32
 
 public:
 #if defined _WIN32
