@@ -1502,6 +1502,45 @@ static int set_sched_affinity(const ncnn::CpuSet& thread_affinity_mask)
         }
         
         break;
+    HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+    if (!kernel32)
+    {
+        NCNN_LOGE("Failed to get kernel32.dll handle");
+        return -1;
+    }
+    
+    typedef BOOL(WINAPI *SetThreadGroupAffinityFunc)(HANDLE, const GROUP_AFFINITY*, PGROUP_AFFINITY);
+    SetThreadGroupAffinityFunc SetThreadGroupAffinityPtr = 
+        (SetThreadGroupAffinityFunc)GetProcAddress(kernel32, "SetThreadGroupAffinity");
+    
+    if (!SetThreadGroupAffinityPtr)
+    {
+        DWORD_PTR prev_mask = SetThreadAffinityMask(GetCurrentThread(), thread_affinity_mask.get_group_mask(0));
+        if (prev_mask == 0)
+        {
+            NCNN_LOGE("SetThreadAffinityMask failed %d", GetLastError());
+            return -1;
+        }
+        return 0;
+    }
+    
+    for (int group = 0; group < thread_affinity_mask.get_group_count(); group++)
+    {
+        ULONG_PTR group_mask = thread_affinity_mask.get_group_mask(group);
+        if (group_mask == 0)
+            continue;
+        
+        GROUP_AFFINITY group_affinity = {0};
+        group_affinity.Mask = group_mask;
+        group_affinity.Group = (WORD)group;
+        
+        if (!SetThreadGroupAffinityPtr(GetCurrentThread(), &group_affinity, NULL))
+        {
+            NCNN_LOGE("SetThreadGroupAffinity failed for group %d, error %d", group, GetLastError());
+            return -1;
+        }
+        
+        break;
     }
     
     return 0;
@@ -2386,19 +2425,6 @@ namespace ncnn {
 CpuSet::CpuSet()
 {
     disable_all();
-
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    actual_cpu_count = (int)sysinfo.dwNumberOfProcessors;
-
-    int group_count = get_processor_group_info();
-
-    #if defined (NCNN_TEST_FORCE_MULTI_GROUP)
-    legacy_mode = false;
-    // NCNN_LOGE("CpuSet::CpuSet force multi group mode");
-    #else
-    legacy_mode = (actual_cpu_count < 64 && group_count == 1);
-    #endif
 }
 
 void CpuSet::enable(int cpu)
@@ -2531,11 +2557,6 @@ ULONG_PTR CpuSet::get_group_mask(int group) const
 int CpuSet::get_group_count() const
 {
     return NCNN_CPU_MASK_GROUPS;
-}
-
-bool CpuSet::is_legacy_mode() const
-{
-    return legacy_mode;
 }
 
 #elif defined __ANDROID__ || defined __linux__
