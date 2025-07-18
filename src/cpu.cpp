@@ -1463,7 +1463,18 @@ static std::vector<int> get_max_freq_mhz()
 
 static int set_sched_affinity(const ncnn::CpuSet& thread_affinity_mask)
 {
-    if (thread_affinity_mask.is_legacy_mode())
+    HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+    if (!kernel32)
+    {
+        NCNN_LOGE("Failed to get kernel32.dll handle");
+        return -1;
+    }
+    
+    typedef BOOL(WINAPI *SetThreadGroupAffinityFunc)(HANDLE, const GROUP_AFFINITY*, PGROUP_AFFINITY);
+    SetThreadGroupAffinityFunc SetThreadGroupAffinityPtr = 
+        (SetThreadGroupAffinityFunc)GetProcAddress(kernel32, "SetThreadGroupAffinity");
+    
+    if (!SetThreadGroupAffinityPtr)
     {
         DWORD_PTR prev_mask = SetThreadAffinityMask(GetCurrentThread(), thread_affinity_mask.get_group_mask(0));
         if (prev_mask == 0)
@@ -1471,50 +1482,26 @@ static int set_sched_affinity(const ncnn::CpuSet& thread_affinity_mask)
             NCNN_LOGE("SetThreadAffinityMask failed %d", GetLastError());
             return -1;
         }
+        return 0;
     }
-    else
+    
+    for (int group = 0; group < thread_affinity_mask.get_group_count(); group++)
     {
-        HMODULE kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
-        if (!kernel32)
+        ULONG_PTR group_mask = thread_affinity_mask.get_group_mask(group);
+        if (group_mask == 0)
+            continue;
+        
+        GROUP_AFFINITY group_affinity = {0};
+        group_affinity.Mask = group_mask;
+        group_affinity.Group = (WORD)group;
+        
+        if (!SetThreadGroupAffinityPtr(GetCurrentThread(), &group_affinity, NULL))
         {
-            NCNN_LOGE("Failed to get kernel32.dll handle");
+            NCNN_LOGE("SetThreadGroupAffinity failed for group %d, error %d", group, GetLastError());
             return -1;
         }
         
-        typedef BOOL(WINAPI *SetThreadGroupAffinityFunc)(HANDLE, const GROUP_AFFINITY*, PGROUP_AFFINITY);
-        SetThreadGroupAffinityFunc SetThreadGroupAffinityPtr = 
-            (SetThreadGroupAffinityFunc)GetProcAddress(kernel32, "SetThreadGroupAffinity");
-        
-        if (!SetThreadGroupAffinityPtr)
-        {
-            NCNN_LOGE("SetThreadGroupAffinity not available, falling back to legacy mode");
-            DWORD_PTR prev_mask = SetThreadAffinityMask(GetCurrentThread(), thread_affinity_mask.get_group_mask(0));
-            if (prev_mask == 0)
-            {
-                NCNN_LOGE("SetThreadAffinityMask failed %d", GetLastError());
-                return -1;
-            }
-            return 0;
-        }
-        
-        for (int group = 0; group < thread_affinity_mask.get_group_count(); group++)
-        {
-            ULONG_PTR group_mask = thread_affinity_mask.get_group_mask(group);
-            if (group_mask == 0)
-                continue;
-            
-            GROUP_AFFINITY group_affinity = {0};
-            group_affinity.Mask = group_mask;
-            group_affinity.Group = (WORD)group;
-            
-            if (!SetThreadGroupAffinityPtr(GetCurrentThread(), &group_affinity, NULL))
-            {
-                NCNN_LOGE("SetThreadGroupAffinity failed for group %d, error %d", group, GetLastError());
-                return -1;
-            }
-            
-            break;
-        }
+        break;
     }
     
     return 0;
@@ -1819,8 +1806,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         NCNN_LOGE("LoadLibrary kernel32.dll failed");
         mask_little.disable_all();
         mask_big = mask_all;
-        mask_little.disable_all();
-        mask_big = mask_all;
         return;
     }
 
@@ -1835,9 +1820,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         if (!glpie(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)(buffer.data()), &bufferSize))
         {
             NCNN_LOGE("GetLogicalProcessorInformationEx failed");
-            FreeLibrary(kernel32);
-            mask_little.disable_all();
-            mask_big = mask_all;
             FreeLibrary(kernel32);
             mask_little.disable_all();
             mask_big = mask_all;
@@ -1884,8 +1866,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
 
         FreeLibrary(kernel32);
 
-        FreeLibrary(kernel32);
-
         if (maxEfficiencyClass == 0)
         {
             // All cores are P cores
@@ -1897,13 +1877,9 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
             mask_little.disable_all();
             mask_big.disable_all();
 
-            mask_little.disable_all();
-            mask_big.disable_all();
-
             for (int i = 0; i < g_cpucount; i++)
             {
                 bool isECore = false;
-                for (size_t j = 0; j < processorCoreType.size(); j++)
                 for (size_t j = 0; j < processorCoreType.size(); j++)
                 {
                     std::pair<DWORD, bool> p = processorCoreType[j];
@@ -1953,9 +1929,6 @@ static void initialize_cpu_thread_affinity_mask(ncnn::CpuSet& mask_all, ncnn::Cp
         }
 
         ncnn::CpuSet smt_cpu_mask = get_smt_cpu_mask();
-
-        mask_little.disable_all();
-        mask_big.disable_all();
 
         mask_little.disable_all();
         mask_big.disable_all();
@@ -2494,7 +2467,13 @@ CpuSet::CpuSet()
     actual_cpu_count = (int)sysinfo.dwNumberOfProcessors;
 
     int group_count = get_processor_group_info();
+
+    #if defined (NCNN_TEST_FORCE_MULTI_GROUP)
+    legacy_mode = false;
+    // NCNN_LOGE("CpuSet::CpuSet force multi group mode");
+    #else
     legacy_mode = (actual_cpu_count < 64 && group_count == 1);
+    #endif
 }
 
 void CpuSet::enable(int cpu)
@@ -2502,13 +2481,6 @@ void CpuSet::enable(int cpu)
     if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
     {
         NCNN_LOGE("CpuSet::enable cpu %d out of range [0, %d)", cpu, NCNN_MAX_CPU_COUNT);
-        return;
-    }
-
-
-    if (legacy_mode && cpu >= 64)
-    {
-        NCNN_LOGE("CpuSet::enable cpu %d out of range [0, 64) in legacy mode", cpu);
         return;
     }
 
@@ -2575,9 +2547,6 @@ bool CpuSet::is_enabled(int cpu) const
     
     return false;
     if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
-        return false;
-    
-    if (legacy_mode && cpu >= 64)
         return false;
     
     int group = cpu / (sizeof(ULONG_PTR) * 8);
@@ -2668,19 +2637,7 @@ int CpuSet::get_group_count() const
 bool CpuSet::is_legacy_mode() const
 {
     return legacy_mode;
-    return mask_groups[group];
 }
-
-int CpuSet::get_group_count() const
-{
-    return NCNN_CPU_MASK_GROUPS;
-}
-
-bool CpuSet::is_legacy_mode() const
-{
-    return legacy_mode;
-}
-
 
 #elif defined __ANDROID__ || defined __linux__
 CpuSet::CpuSet()
