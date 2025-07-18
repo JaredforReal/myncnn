@@ -2505,24 +2505,10 @@ void CpuSet::disable(int cpu)
     {
         mask_groups[group] &= ~((ULONG_PTR)1 << bit);
     }
-    if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
-        return;
-    
-    int group = cpu / (sizeof(ULONG_PTR) * 8);
-    int bit = cpu % (sizeof(ULONG_PTR) * 8);
-    
-    if (group < NCNN_CPU_MASK_GROUPS)
-    {
-        mask_groups[group] &= ~((ULONG_PTR)1 << bit);
-    }
 }
 
 void CpuSet::disable_all()
 {
-    for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
-    {
-        mask_groups[i] = 0;
-    }
     for (int i = 0; i < NCNN_CPU_MASK_GROUPS; i++)
     {
         mask_groups[i] = 0;
@@ -2535,18 +2521,6 @@ bool CpuSet::is_enabled(int cpu) const
         return false;
     
     if (legacy_mode && cpu >= 64)
-        return false;
-    
-    int group = cpu / (sizeof(ULONG_PTR) * 8);
-    int bit = cpu % (sizeof(ULONG_PTR) * 8);
-    
-    if (group < NCNN_CPU_MASK_GROUPS)
-    {
-        return (mask_groups[group] & ((ULONG_PTR)1 << bit)) != 0;
-    }
-    
-    return false;
-    if (cpu < 0 || cpu >= NCNN_MAX_CPU_COUNT)
         return false;
     
     int group = cpu / (sizeof(ULONG_PTR) * 8);
